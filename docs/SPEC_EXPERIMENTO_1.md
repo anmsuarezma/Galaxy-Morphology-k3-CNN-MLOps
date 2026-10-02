@@ -1934,6 +1934,7 @@ pandas
 matplotlib
 scikit-learn
 mlflow
+h5py
 jupyterlab
 pytest
 ruff
