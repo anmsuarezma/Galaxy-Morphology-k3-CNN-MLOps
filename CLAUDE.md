@@ -15,3 +15,9 @@ cualquier fase. Ante conflicto entre este archivo y la spec, preguntar.
 ## Comandos (desde la raíz del workspace)
 - Tests: `uv run pytest -q galaxy3/tests`
 - Lint: `uv run ruff check galaxy3 && uv run ruff format --check galaxy3`
+
+## Ubicación del código
+- Todo el código, tests, notebooks, scripts, datos y outputs de Galaxy3 viven dentro de `galaxy3/`.
+- Fuera de `galaxy3/` solo pueden modificarse `pyproject.toml`, `uv.lock` y `.gitignore` de la raíz,
+  y únicamente después de mostrar el cambio exacto y recibir aprobación.
+- No modificar nada dentro de `reto_cnn_fashionmnist/`, `perceptron/` ni los notebooks de la raíz.
