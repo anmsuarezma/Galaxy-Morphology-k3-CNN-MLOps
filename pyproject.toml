@@ -30,6 +30,7 @@ torchvision = { index = "pytorch-cu132" }
 
 [tool.ruff]
 line-length = 100
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "C90"]
