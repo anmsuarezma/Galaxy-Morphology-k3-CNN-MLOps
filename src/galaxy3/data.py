@@ -1,14 +1,27 @@
-"""Transformaciones y estadísticas de imágenes para Galaxy3.
+"""Datos de Galaxy3: transformaciones, estadísticas y DataLoaders.
 
-Este módulo no sabe nada del modelo. Las transformaciones se construyen a partir de
-parámetros explícitos (resolución y crop), no quedan fijadas aquí.
+Este módulo no sabe nada del modelo. Las transformaciones se construyen a partir de la
+configuración (resolución, crop) y de ``dataset_stats.json`` (normalización); no quedan
+fijadas aquí.
 """
 
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
 import torch
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
+from torchvision.datasets import ImageFolder
+
+from galaxy3.config import ExperimentConfig
+from galaxy3.utils import get_device, make_generator, seed_worker
+
+DATASET_STATS_NAME = "dataset_stats.json"
+"""Archivo que escribe la preparación en ``data_root`` (split_seed, clases, mean/std)."""
 
 
 def build_base_transform(image_size: int, center_crop: int | None = None) -> transforms.Compose:
@@ -77,3 +90,143 @@ def compute_channel_stats(
     mean = total / n_pixels
     std = (sq_total / n_pixels - mean * mean).clamp_min(0).sqrt()
     return mean.tolist(), std.tolist()
+
+
+def load_dataset_stats(data_root: Path) -> dict[str, Any]:
+    """Lee ``data_root / dataset_stats.json``, escrito por la preparación.
+
+    Raises:
+        FileNotFoundError: Si el archivo no existe (falta ejecutar ``prepare_galaxy3.py``).
+    """
+    path = Path(data_root) / DATASET_STATS_NAME
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"No existe {path}; ejecuta primero galaxy3/scripts/prepare_galaxy3.py."
+        )
+    return json.loads(path.read_text())
+
+
+def check_stats_match_config(stats: dict[str, Any], config: ExperimentConfig) -> None:
+    """Verifica que ``dataset_stats.json`` corresponda a la configuración.
+
+    ``split_seed`` debe coincidir (el split se fijó en la preparación), y también
+    ``image_size`` y ``center_crop``: ``mean_train``/``std_train`` solo son válidas
+    para las transformaciones con que se calcularon.
+
+    Raises:
+        ValueError: Si algún valor no coincide.
+    """
+    transform = stats["transform"]
+    pairs = {
+        "split_seed": (stats["split_seed"], config.split_seed),
+        "image_size": (transform["image_size"], config.image_size),
+        "center_crop": (transform["center_crop"], config.center_crop),
+    }
+    errors = [f"{k}: stats={s!r}, config={c!r}" for k, (s, c) in pairs.items() if s != c]
+    if errors:
+        raise ValueError(
+            "dataset_stats.json no coincide con la configuración ("
+            + "; ".join(errors)
+            + "). Ajusta la configuración o regenera los datos con prepare_galaxy3.py."
+        )
+
+
+def build_transform(
+    config: ExperimentConfig, mean: list[float], std: list[float]
+) -> transforms.Compose:
+    """Pipeline completo de entrada al modelo: base (crop, ``Resize``, ``ToTensor``) + ``Normalize``.
+
+    Args:
+        config: Aporta ``image_size`` y ``center_crop``.
+        mean: Media por canal de train (``mean_train``), longitud 3.
+        std: Desviación por canal de train (``std_train``), longitud 3, valores > 0.
+
+    Returns:
+        Transformación que produce tensores ``(3, image_size, image_size)`` normalizados.
+
+    Raises:
+        ValueError: Si ``mean``/``std`` no tienen 3 valores o algún ``std`` no es positivo.
+    """
+    if len(mean) != 3 or len(std) != 3 or any(s <= 0 for s in std):
+        raise ValueError(f"mean/std deben tener 3 valores y std > 0: mean={mean}, std={std}")
+    base = build_base_transform(config.image_size, config.center_crop)
+    return transforms.Compose([*base.transforms, transforms.Normalize(mean, std)])
+
+
+@dataclass(frozen=True)
+class DataLoaders:
+    """Loaders de los tres splits y nombres de clase (índice = etiqueta)."""
+
+    train: DataLoader
+    val: DataLoader
+    test: DataLoader
+    class_names: list[str]
+
+
+def _make_loader(
+    dataset: Dataset, config: ExperimentConfig, device: torch.device, shuffle: bool
+) -> DataLoader:
+    # Cada loader tiene su propio generador: el shuffle y las semillas de los workers no
+    # consumen el RNG global (que usan la inicialización del modelo y el Dropout).
+    return DataLoader(
+        dataset,
+        batch_size=config.batch_size,
+        shuffle=shuffle,
+        num_workers=config.num_workers,
+        pin_memory=device.type == "cuda",
+        persistent_workers=config.num_workers > 0,
+        worker_init_fn=seed_worker,
+        generator=make_generator(config.train_seed),
+    )
+
+
+def make_dataloaders(config: ExperimentConfig, device: torch.device | None = None) -> DataLoaders:
+    """Construye los loaders de train, val y test desde ``config.data_root``.
+
+    Train usa ``shuffle=True`` con un generador sembrado con ``train_seed``: misma
+    ``train_seed`` -> mismo orden de batches. Val y test usan ``shuffle=False``.
+    ``pin_memory`` solo se activa en CUDA; ``persistent_workers`` solo con
+    ``num_workers > 0``.
+
+    El loader de test se devuelve para la evaluación final explícita
+    (``evaluate_on_test``); no debe pasarse a ``fit``.
+
+    Args:
+        config: Configuración del experimento.
+        device: Device de entrenamiento; solo decide ``pin_memory``. Si es ``None``,
+            se resuelve con ``get_device(config.device_preference)``.
+
+    Returns:
+        ``DataLoaders`` con batches ``X`` de forma ``(B, 3, image_size, image_size)``
+        (``float32``, normalizados) e ``y`` de forma ``(B,)`` (``int64``).
+
+    Raises:
+        FileNotFoundError: Si falta ``dataset_stats.json``.
+        ValueError: Si ``dataset_stats.json`` no coincide con ``config`` o las clases de
+            las carpetas no coinciden con las registradas en la preparación.
+    """
+    stats = load_dataset_stats(config.data_root)
+    check_stats_match_config(stats, config)
+    device = device if device is not None else get_device(config.device_preference)
+    transform = build_transform(config, stats["mean_train"], stats["std_train"])
+    datasets = {
+        split: ImageFolder(config.data_root / split, transform=transform)
+        for split in ("train", "val", "test")
+    }
+    for split, dataset in datasets.items():
+        if dataset.class_to_idx != stats["class_to_label"]:
+            raise ValueError(
+                f"Clases de {split} ({dataset.class_to_idx}) no coinciden con "
+                f"dataset_stats.json ({stats['class_to_label']})"
+            )
+    if len(datasets["train"].classes) != config.num_classes:
+        raise ValueError(
+            f"config.num_classes={config.num_classes}, pero hay "
+            f"{len(datasets['train'].classes)} clases en {config.data_root}"
+        )
+    return DataLoaders(
+        train=_make_loader(datasets["train"], config, device, shuffle=True),
+        val=_make_loader(datasets["val"], config, device, shuffle=False),
+        test=_make_loader(datasets["test"], config, device, shuffle=False),
+        class_names=list(datasets["train"].classes),
+    )

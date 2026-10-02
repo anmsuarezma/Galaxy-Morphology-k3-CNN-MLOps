@@ -28,7 +28,7 @@ from PIL import Image
 from sklearn.model_selection import train_test_split
 from torchvision.datasets import ImageFolder
 
-from galaxy3.data import build_base_transform, compute_channel_stats
+from galaxy3.data import DATASET_STATS_NAME, build_base_transform, compute_channel_stats
 
 GALAXY3_CLASSES: dict[int, str] = {
     2: "round_smooth",
@@ -49,7 +49,7 @@ H5_IMAGES_KEY = "images"
 H5_LABELS_KEY = "ans"
 READ_BLOCK = 1110  # múltiplo del chunk del .h5 en el eje 0 (555)
 MANIFEST_NAME = "manifest.csv"
-STATS_NAME = "dataset_stats.json"
+STATS_NAME = DATASET_STATS_NAME
 
 
 def class_to_label(class_map: dict[int, str]) -> dict[str, int]:
