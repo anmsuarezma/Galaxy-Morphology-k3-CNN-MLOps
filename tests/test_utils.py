@@ -64,6 +64,17 @@ def test_set_seed_is_reproducible():
     assert torch.equal(first[2], second[2])
 
 
+def test_set_seed_sets_and_restores_cudnn_flags(monkeypatch):
+    monkeypatch.setattr(torch.backends.cudnn, "deterministic", False)
+    monkeypatch.setattr(torch.backends.cudnn, "benchmark", True)
+    set_seed(123, deterministic=True)
+    assert torch.backends.cudnn.deterministic is True
+    assert torch.backends.cudnn.benchmark is False
+    set_seed(123)
+    assert torch.backends.cudnn.deterministic is False
+    assert torch.backends.cudnn.benchmark is False
+
+
 def test_set_seed_rejects_negative():
     with pytest.raises(ValueError):
         set_seed(-1)

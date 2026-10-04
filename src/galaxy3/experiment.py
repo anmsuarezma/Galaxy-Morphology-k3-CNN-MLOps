@@ -556,7 +556,7 @@ def run_experiment(config: ExperimentConfig, verbose: bool = True) -> Experiment
             ``val_loss`` no fue finita en ninguna época.
     """
     checkpoint_path = checkpoint_path_for(config)
-    set_seed(config.train_seed)
+    set_seed(config.train_seed, deterministic=config.deterministic)
     device = get_device(config.device_preference)
     loaders = (
         make_split_loader(config, "train", device),

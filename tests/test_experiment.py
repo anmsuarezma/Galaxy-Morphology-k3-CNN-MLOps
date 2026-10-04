@@ -198,6 +198,21 @@ def test_run_experiment_works_without_test_folder(tmp_path):
     assert result.checkpoint_path.is_file()
 
 
+@pytest.mark.parametrize("deterministic", [False, True])
+def test_run_experiment_passes_deterministic_to_set_seed(config, monkeypatch, deterministic):
+    calls = []
+    original = experiment.set_seed
+
+    def spy(seed, deterministic=False):
+        calls.append((seed, deterministic))
+        original(seed, deterministic=deterministic)
+
+    monkeypatch.setattr(experiment, "set_seed", spy)
+    run_experiment(replace(config, epochs=1, deterministic=deterministic), verbose=False)
+    assert calls == [(config.train_seed, deterministic)]
+    torch.backends.cudnn.deterministic = False
+
+
 def test_split_seed_mismatch_raises(config):
     with pytest.raises(ValueError, match="split_seed"):
         run_experiment(replace(config, split_seed=SPLIT_SEED + 1), verbose=False)
@@ -278,6 +293,7 @@ def test_run_is_registered_with_params(config, result):
     params = run.data.params
     assert set(config.to_dict()) <= set(params)
     assert params["weight_decay"] == str(config.weight_decay)
+    assert params["deterministic"] == str(config.deterministic)
     assert params["model_name"] == "GalaxyCNN"
     assert params["optimizer"] == "AdamW"
     assert params["device"] == "cpu"

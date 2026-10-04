@@ -24,6 +24,8 @@ class ExperimentConfig:
             datos; debe coincidir con la registrada en ``dataset_stats.json``.
         train_seed: Semilla de inicialización, orden de batches y máscaras de Dropout.
             Cambiarla nunca cambia el split.
+        deterministic: Si se fuerzan algoritmos deterministas de cuDNN (ver
+            ``utils.set_seed``). Puede hacer más lento el entrenamiento en GPU.
         num_classes: Número de clases (>= 2).
         image_size: Lado de la imagen cuadrada de entrada al modelo, en píxeles.
         center_crop: Lado del ``CenterCrop`` previo al ``Resize``, o ``None`` (baseline).
@@ -46,6 +48,7 @@ class ExperimentConfig:
     run_name: str = "baseline"
     split_seed: int = 2026
     train_seed: int = 2026
+    deterministic: bool = False
     num_classes: int = 3
     image_size: int = 128
     center_crop: int | None = None

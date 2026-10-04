@@ -59,10 +59,10 @@ def set_seed(seed: int, deterministic: bool = False) -> None:
 
     Args:
         seed: Semilla entera no negativa.
-        deterministic: Si es ``True``, fuerza algoritmos deterministas de cuDNN
-            (``cudnn.deterministic=True``, ``cudnn.benchmark=False``). Costo: puede
-            hacer más lentas las convoluciones en GPU, porque desactiva la búsqueda
-            del algoritmo más rápido.
+        deterministic: Valor que se asigna a ``cudnn.deterministic`` (fuerza algoritmos
+            deterministas de cuDNN). ``cudnn.benchmark`` queda siempre en ``False``. Se
+            asigna en ambos sentidos para que un run previo en el mismo proceso no deje
+            el flag activado. Costo: puede hacer más lentas las convoluciones en GPU.
 
     Raises:
         ValueError: Si ``seed`` es negativa.
@@ -72,9 +72,8 @@ def set_seed(seed: int, deterministic: bool = False) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)  # también siembra todas las GPUs CUDA
-    if deterministic:
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = deterministic
+    torch.backends.cudnn.benchmark = False
 
 
 def make_generator(seed: int) -> torch.Generator:

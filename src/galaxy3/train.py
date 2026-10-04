@@ -36,6 +36,11 @@ _FLAGS: dict[str, tuple[str, dict[str, Any], str]] = {
     ),
     "--dropout-p": ("dropout_p", {"type": float}, "Dropout del clasificador, en [0, 1)"),
     "--train-seed": ("train_seed", {"type": int}, "semilla de inicialización y batches"),
+    "--deterministic": (
+        "deterministic",
+        {"action": argparse.BooleanOptionalAction},
+        "algoritmos deterministas de cuDNN (más lento en GPU)",
+    ),
     "--epochs": ("epochs", {"type": int}, "número fijo de épocas"),
     "--learning-rate": ("learning_rate", {"type": float}, "learning rate de AdamW"),
     "--batch-size": ("batch_size", {"type": int}, "tamaño de batch"),

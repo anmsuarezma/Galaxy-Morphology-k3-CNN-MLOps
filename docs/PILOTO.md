@@ -80,6 +80,48 @@ El mínimo es poco pronunciado: la época 8 alcanzó 0.222, y entre las épocas 
 No aplica. `val_acc` es 0.919 en la mejor época y su máximo en todo el run es 0.948, ambos
 por debajo de 0.98. Con 917 imágenes de validation, 1 punto de accuracy ≈ 9 imágenes.
 
+## Determinismo y `num_workers` (decisión previa a la Fase 13)
+
+Los runs oficiales A, B y C usan `--deterministic` y `--num-workers 0`.
+
+### `--deterministic`
+
+Sin determinismo, cuDNN elige algoritmos no deterministas y dos ejecuciones idénticas
+divergen. Evidencia en el experimento MLflow `galaxy3-determinism`: run C, 3 épocas,
+`num_workers=8`, ejecutados en serie en la RTX 3060.
+
+| Modo | `val_loss` época 2 (ejecución 1 / 2) | ¿Par idéntico? | `epoch_time` medio (épocas 2–3) |
+|---|---|---|---|
+| `deterministic=False` | 0.4576 / 0.3216 | No | 2.71 s |
+| `deterministic=True` | 0.34598816650124387 en ambas | Sí, bit a bit en las 3 épocas | 2.78 s |
+
+- Sin determinismo, la diferencia entre dos ejecuciones con la misma `train_seed` es
+  comparable a las diferencias que se quieren atribuir a BatchNorm o Dropout.
+- El costo del modo determinista es ≈ 2–3 %, dentro del ruido de medición.
+- Con `cudnn.deterministic=True` basta en este modelo; no hizo falta
+  `torch.use_deterministic_algorithms`.
+
+### `--num-workers 0`
+
+Se usa para evitar un deadlock de los workers del `DataLoader` (procesos creados con
+fork). En la verificación, 1 de 5 ejecuciones con `num_workers=8` quedó bloqueada antes del
+primer batch: el proceso principal esperaba en la cola del `DataLoader` y un worker estaba
+detenido en un `futex`. La causa raíz no se identificó.
+
+`num_workers` **sí cambia los resultados**, aun con `deterministic=True`. Verificado con el
+run `c_det_nw0` (`num_workers=0`) contra `c_det_1` (`num_workers=8`): la época 1 es
+idéntica bit a bit, pero desde la época 2 el orden de los batches difiere (`val_loss`
+época 2: 0.4123 frente a 0.3460). La causa probable es que cada iterador del `DataLoader`
+toma una semilla base del mismo `torch.Generator` que el shuffle. Con `num_workers=0` se
+crea un iterador por época; con `persistent_workers=True`, uno solo.
+
+Consecuencias:
+
+- A, B y C son reproducibles y comparables entre sí, porque comparten
+  `num_workers=0`.
+- No son reproducibles bit a bit frente a runs con `num_workers > 0`, incluido el piloto.
+- El costo es ≈ 12.8 s por época frente a ≈ 2.8 s (≈ 9–10 min por run de 40 épocas).
+
 ## Alcance del piloto
 
 - El piloto no se usó para elegir entre A, B y C ni para probar combinaciones.

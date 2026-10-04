@@ -66,6 +66,7 @@ def test_flags_map_to_config_fields(tmp_path):
             "--use-batchnorm",
             "--dropout-p", "0.3",
             "--train-seed", "11",
+            "--deterministic",
             "--epochs", "5",
             "--learning-rate", "5e-4",
             "--batch-size", "32",
@@ -82,6 +83,7 @@ def test_flags_map_to_config_fields(tmp_path):
         use_batchnorm=True,
         dropout_p=0.3,
         train_seed=11,
+        deterministic=True,
         epochs=5,
         learning_rate=5e-4,
         batch_size=32,
@@ -106,6 +108,11 @@ def test_omitted_flags_keep_defaults():
 
 def test_no_use_batchnorm_flag():
     assert train.parse_config(["--no-use-batchnorm"]).use_batchnorm is False
+
+
+def test_deterministic_flag_defaults_to_false():
+    assert train.parse_config([]).deterministic is False
+    assert train.parse_config(["--no-deterministic"]).deterministic is False
 
 
 def test_parser_defaults_are_not_duplicated():

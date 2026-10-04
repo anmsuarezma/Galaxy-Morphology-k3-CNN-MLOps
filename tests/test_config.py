@@ -14,6 +14,7 @@ def test_defaults_match_spec():
     config = ExperimentConfig()
     assert config.split_seed == 2026
     assert config.train_seed == 2026
+    assert config.deterministic is False
     assert config.num_classes == 3
     assert config.image_size == 128
     assert config.center_crop is None
