@@ -17,6 +17,8 @@ from galaxy3.utils import PROJECT_ROOT
 
 PACKAGE_DIR = Path(galaxy3.__file__).parent
 MLFLOW_MODULE = "experiment.py"
+# Entry points que dependen de experiment.py por diseño (y por eso cargan MLflow).
+ENTRY_POINTS = {"train.py"}
 
 
 def _imported_roots(path: Path) -> set[str]:
@@ -39,7 +41,11 @@ def test_only_experiment_imports_mlflow():
 
 def test_core_modules_do_not_load_mlflow_transitively():
     """Importar el núcleo en un proceso limpio no carga MLflow (ni de forma indirecta)."""
-    modules = [path.stem for path in PACKAGE_DIR.glob("*.py") if path.name not in {MLFLOW_MODULE}]
+    modules = [
+        path.stem
+        for path in PACKAGE_DIR.glob("*.py")
+        if path.name not in {MLFLOW_MODULE, *ENTRY_POINTS}
+    ]
     assert {"engine", "metrics", "plots"} <= set(modules)
     imports = "; ".join(f"import galaxy3.{name}" for name in modules)
     code = f"import sys; {imports}; assert 'mlflow' not in sys.modules, 'mlflow cargado'"
