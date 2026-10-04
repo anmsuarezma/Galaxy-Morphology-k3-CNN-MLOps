@@ -2,7 +2,8 @@
 
 Imágenes de ruido de 32x32 (GalaxyCNN funciona con cualquier lado múltiplo de 16), CPU y
 ``num_workers=0`` para que sean rápidos. No se evalúa la calidad del modelo: solo el
-contrato de la orquestación.
+contrato de la orquestación y lo que queda registrado en MLflow. El backend de MLflow es
+un SQLite temporal (ver ``conftest.py``).
 """
 
 import json
@@ -13,6 +14,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 
+import mlflow  # noqa: E402
 import numpy as np  # noqa: E402
 import pytest  # noqa: E402
 import torch  # noqa: E402
@@ -25,8 +27,11 @@ from galaxy3.data import DATASET_STATS_NAME  # noqa: E402
 from galaxy3.experiment import (  # noqa: E402
     checkpoint_path_for,
     evaluate_on_test,
+    resolve_tracking_uri,
     run_experiment,
+    run_reference_path,
 )
+from galaxy3.utils import PROJECT_ROOT  # noqa: E402
 
 CLASSES = ["barred_spiral", "edge_on_no_bulge", "round_smooth"]
 PER_CLASS = {"train": 6, "val": 3, "test": 2}
@@ -50,6 +55,7 @@ def _make_data_root(root, splits=("train", "val", "test")):
     stats = {
         "split_seed": SPLIT_SEED,
         "class_to_label": {name: i for i, name in enumerate(CLASSES)},
+        "counts": {split: dict.fromkeys(CLASSES, n) for split, n in PER_CLASS.items()},
         "transform": {"image_size": IMAGE_SIZE, "center_crop": None},
         "mean_train": [0.5, 0.5, 0.5],
         "std_train": [0.25, 0.25, 0.25],
@@ -236,3 +242,140 @@ def test_evaluate_on_test_does_not_modify_checkpoint(config, result):
 def test_evaluate_on_test_rejects_mismatched_config(config, result, changes):
     with pytest.raises(ValueError, match=next(iter(changes))):
         evaluate_on_test(result.checkpoint_path, replace(config, **changes))
+
+
+# --------------------------------------------------------------------------- MLflow
+
+EXPECTED_ARTIFACTS = {
+    "config.json",
+    "metrics/test_run.json",
+    "checkpoints/test_run_best.pt",
+    "figures/test_run_training_curves.png",
+    "figures/test_run_val_confusion_matrix.png",
+}
+
+
+def _artifact_paths(run_id: str, path: str | None = None) -> set[str]:
+    """Rutas de todos los artifacts de un run (recorre carpetas)."""
+    client = mlflow.MlflowClient()
+    paths = set()
+    for item in client.list_artifacts(run_id, path):
+        paths |= _artifact_paths(run_id, item.path) if item.is_dir else {item.path}
+    return paths
+
+
+def _metric_history(run_id: str, name: str) -> list[tuple[int, float]]:
+    history = mlflow.MlflowClient().get_metric_history(run_id, name)
+    return sorted((m.step, m.value) for m in history)
+
+
+def test_run_is_registered_with_params(config, result):
+    run = mlflow.get_run(result.run_id)
+    assert run.info.status == "FINISHED"
+    assert run.info.run_name == config.run_name
+    experiment_name = mlflow.get_experiment(run.info.experiment_id).name
+    assert experiment_name == config.mlflow_experiment_name
+    params = run.data.params
+    assert set(config.to_dict()) <= set(params)
+    assert params["weight_decay"] == str(config.weight_decay)
+    assert params["model_name"] == "GalaxyCNN"
+    assert params["optimizer"] == "AdamW"
+    assert params["device"] == "cpu"
+    assert params["total_parameters"] == str(result.total_parameters)
+    assert params["trainable_parameters"] == str(result.trainable_parameters)
+    for split, n in PER_CLASS.items():
+        assert params[f"{split}_samples"] == str(n * len(CLASSES))
+
+
+def test_epoch_metrics_are_logged_with_step(config, result):
+    history = result.history
+    for name, key in experiment.EPOCH_METRICS.items():
+        logged = _metric_history(result.run_id, name)
+        assert [step for step, _ in logged] == list(range(1, config.epochs + 1))
+        assert [value for _, value in logged] == pytest.approx(history[key])
+
+
+def test_final_metrics_are_logged(result):
+    logged = mlflow.get_run(result.run_id).data.metrics
+    for name, value in result.final_metrics().items():
+        assert logged[name] == pytest.approx(value)
+    assert not any(name.startswith("test_") for name in logged)
+
+
+def test_artifacts_are_logged_next_to_temporary_database(result, isolated_mlflow_backend):
+    assert _artifact_paths(result.run_id) == EXPECTED_ARTIFACTS
+    artifact_uri = mlflow.get_run(result.run_id).info.artifact_uri
+    assert artifact_uri.startswith((isolated_mlflow_backend.parent / "mlruns").as_uri())
+
+
+def test_run_id_is_saved_next_to_checkpoint(result):
+    reference = json.loads(run_reference_path(result.checkpoint_path).read_text())
+    assert run_reference_path(result.checkpoint_path).parent == result.checkpoint_path.parent
+    assert reference == {"run_id": result.run_id, "tracking_uri": resolve_tracking_uri()}
+
+
+def test_real_backend_is_never_touched(config):
+    watched = [PROJECT_ROOT / "mlflow.db", PROJECT_ROOT / "mlruns"]
+
+    def snapshot():
+        return [(p.exists(), p.stat().st_mtime_ns if p.exists() else None) for p in watched]
+
+    before = snapshot()
+    result = run_experiment(replace(config, epochs=1), verbose=False)
+    evaluate_on_test(result.checkpoint_path, replace(config, epochs=1))
+    assert snapshot() == before
+
+
+def test_failed_training_marks_run_as_failed(config, monkeypatch):
+    def broken_fit(*args, **kwargs):
+        raise RuntimeError("fallo simulado")
+
+    monkeypatch.setattr(experiment, "fit", broken_fit)
+    with pytest.raises(RuntimeError, match="fallo simulado"):
+        run_experiment(replace(config, run_name="failing_run"), verbose=False)
+    runs = mlflow.search_runs(
+        experiment_names=[config.mlflow_experiment_name],
+        filter_string="attributes.run_name = 'failing_run'",
+        output_format="list",
+    )
+    assert [run.info.status for run in runs] == ["FAILED"]
+
+
+def test_evaluate_on_test_logs_into_the_same_run(config, result):
+    final = evaluate_on_test(result.checkpoint_path, config)
+    assert final.run_id == result.run_id
+    run = mlflow.get_run(result.run_id)
+    assert run.info.status == "FINISHED"
+    for name, value in {**final.final_metrics(), **result.final_metrics()}.items():
+        assert run.data.metrics[name] == pytest.approx(value)
+    test_artifacts = {p for p in _artifact_paths(result.run_id) if p.startswith("test/")}
+    expected = {f"test/{path.name}" for path in final.figure_paths.values()}
+    assert test_artifacts == expected | {"test/test_run_test.json"}
+
+
+def test_evaluate_on_test_runs_only_once(config, result, monkeypatch):
+    evaluate_on_test(result.checkpoint_path, config)
+    requested = []
+    original = data.make_split_loader
+
+    def spy(cfg, split, device=None):
+        requested.append(split)
+        return original(cfg, split, device)
+
+    monkeypatch.setattr(experiment, "make_split_loader", spy)
+    with pytest.raises(RuntimeError, match="una sola vez"):
+        evaluate_on_test(result.checkpoint_path, config)
+    assert requested == []  # el segundo intento no abre test
+
+
+def test_evaluate_on_test_requires_run_reference(config, result):
+    run_reference_path(result.checkpoint_path).unlink()
+    with pytest.raises(FileNotFoundError, match="mlflow.json"):
+        evaluate_on_test(result.checkpoint_path, config)
+
+
+def test_evaluate_on_test_rejects_other_tracking_uri(config, result, monkeypatch, tmp_path):
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", f"sqlite:///{(tmp_path / 'other.db').as_posix()}")
+    with pytest.raises(ValueError, match="tracking URI"):
+        evaluate_on_test(result.checkpoint_path, config)
+    assert not (tmp_path / "other.db").exists()
