@@ -1,9 +1,9 @@
 """Configuración común de los tests.
 
-Los tests nunca escriben en el backend real de MLflow (``galaxy3/mlflow.db``): durante
-toda la sesión ``MLFLOW_TRACKING_URI`` apunta a un SQLite temporal, y los artifacts van a
-``mlruns/`` junto a él. Una sola base por sesión evita repetir las migraciones de MLflow
-en cada test.
+Los tests nunca escriben en el backend real de MLflow (``mlflow.db`` en la raíz del
+repositorio): durante toda la sesión ``MLFLOW_TRACKING_URI`` apunta a un SQLite temporal,
+y los artifacts van a ``mlruns/`` junto a él. Una sola base por sesión evita repetir las
+migraciones de MLflow en cada test.
 """
 
 import pytest

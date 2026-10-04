@@ -1,3 +1,15 @@
+# Ambiente y archivos de Python
+.venv/
+__pycache__/
+*.py[oc]
+build/
+dist/
+*.egg-info
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Datos, salidas y MLflow (nunca se versionan)
 data/
 outputs/
 mlruns/

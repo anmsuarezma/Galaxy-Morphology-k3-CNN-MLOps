@@ -147,9 +147,7 @@ def load_dataset_stats(data_root: Path) -> dict[str, Any]:
     """
     path = Path(data_root) / DATASET_STATS_NAME
     if not path.is_file():
-        raise FileNotFoundError(
-            f"No existe {path}; ejecuta primero galaxy3/scripts/prepare_galaxy3.py."
-        )
+        raise FileNotFoundError(f"No existe {path}; ejecuta primero scripts/prepare_galaxy3.py.")
     return json.loads(path.read_text())
 
 

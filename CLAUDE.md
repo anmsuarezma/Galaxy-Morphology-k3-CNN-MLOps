@@ -12,12 +12,11 @@ cualquier fase. Ante conflicto entre este archivo y la spec, preguntar.
 - Checkpoints cargables con `torch.load(..., weights_only=True)`.
 - No implementar ResNet, Docker, APIs, AMP ni DDP.
 
-## Comandos (desde la raíz del workspace)
-- Tests: `uv run pytest -q galaxy3/tests`
-- Lint: `uv run ruff check galaxy3 && uv run ruff format --check galaxy3`
+## Comandos (desde la raíz del repositorio)
+- Ambiente: `uv sync` (crea `.venv`)
+- Tests: `uv run pytest -q`
+- Lint: `uv run ruff check . && uv run ruff format --check .`
 
 ## Ubicación del código
-- Todo el código, tests, notebooks, scripts, datos y outputs de Galaxy3 viven dentro de `galaxy3/`.
-- Fuera de `galaxy3/` solo pueden modificarse `pyproject.toml`, `uv.lock` y `.gitignore` de la raíz,
-  y únicamente después de mostrar el cambio exacto y recibir aprobación.
-- No modificar nada dentro de `reto_cnn_fashionmnist/`, `perceptron/` ni los notebooks de la raíz.
+- Código en `src/galaxy3/`; tests en `tests/`; notebook en `notebooks/`; scripts en `scripts/`.
+- `data/`, `outputs/`, `mlruns/` y `mlflow.db` nunca se versionan.

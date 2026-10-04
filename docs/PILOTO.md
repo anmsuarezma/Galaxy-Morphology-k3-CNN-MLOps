@@ -33,7 +33,7 @@ uv run python -m galaxy3.train --run-name pilot_baseline --epochs 50 \
 - MLflow: experimento `galaxy3-pilot`, run_id `848709cc9a884bad9f3868c3a1b420ad`.
 - Entorno: RTX 3060 (CUDA), torch 2.14.0+cu132, mlflow 3.16.1.
 - Tiempo: ≈ 2.7 s por época (3.5 s la primera, por el arranque de workers y CUDA).
-- Figura: `galaxy3/outputs/figures/pilot_baseline_training_curves.png` (no versionada).
+- Figura: `outputs/figures/pilot_baseline_training_curves.png` (no versionada).
 
 ## Resultados en la mejor época (best checkpoint, evaluado en modo eval)
 

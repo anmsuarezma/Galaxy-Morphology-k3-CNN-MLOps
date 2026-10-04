@@ -2,10 +2,10 @@
 
 La lógica vive en ``galaxy3.preparation``; este script solo procesa argumentos y reporta.
 
-Uso, desde la raíz del workspace::
+Uso, desde la raíz del repositorio::
 
-    uv run python galaxy3/scripts/prepare_galaxy3.py
-    uv run python galaxy3/scripts/prepare_galaxy3.py --overwrite
+    uv run python scripts/prepare_galaxy3.py
+    uv run python scripts/prepare_galaxy3.py --overwrite
 """
 
 from __future__ import annotations

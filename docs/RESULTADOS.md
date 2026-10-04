@@ -84,7 +84,7 @@ porque así lo fija el protocolo, no como evidencia de que Dropout mejore sobre 
 
 Generadas con `plot_runs_comparison` y `plot_confusion_matrix` a partir de los JSON de
 métricas de cada run (sin recalcular nada ni abrir test). Están en
-`galaxy3/outputs/figures/fase13/` (no versionadas):
+`outputs/figures/fase13/` (no versionadas):
 
 - `runs_comparison_val.png`: `val_loss` y `val_acc` de A, B y C superpuestas, con la mejor
   época marcada.
@@ -158,9 +158,9 @@ En validation, la matriz de C era `[[285, 7, 15], [5, 207, 1], [8, 1, 388]]`.
 
 ### Figuras de test
 
-En `galaxy3/outputs/figures/` (no versionadas) y en el run de MLflow, carpeta `test/`:
+En `outputs/figures/` (no versionadas) y en el run de MLflow, carpeta `test/`:
 
 - `batchnorm_dropout_test_confusion_matrix.png`
 - `batchnorm_dropout_test_errors.png`
 
-Las métricas completas están en `galaxy3/outputs/metrics/batchnorm_dropout_test.json`.
+Las métricas completas están en `outputs/metrics/batchnorm_dropout_test.json`.

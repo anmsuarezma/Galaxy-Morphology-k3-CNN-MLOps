@@ -32,7 +32,7 @@ Lectura sin reentrenar: ``find_run_id``, ``load_run_result`` (reconstruye el
 test ya registrada, sin volver a evaluar). Los artifacts se descargan a
 ``outputs/mlflow_downloads/<run_id>/``.
 
-Tracking URI: ``MLFLOW_TRACKING_URI`` si existe; si no, ``sqlite:///<galaxy3>/mlflow.db``
+Tracking URI: ``MLFLOW_TRACKING_URI`` si existe; si no, ``sqlite:///<repo>/mlflow.db``
 (el backend local por defecto de MLflow 3). Con un backend SQLite los artifacts se guardan
 en ``mlruns/`` junto a la base, sin depender del directorio actual.
 """
@@ -83,7 +83,7 @@ MAX_ERROR_EXAMPLES = 16
 FIGURE_DPI = 120
 
 LOCAL_TRACKING_URI = f"sqlite:///{(PROJECT_ROOT / 'mlflow.db').as_posix()}"
-"""Backend local por defecto: SQLite dentro de ``galaxy3/`` (ignorado por git)."""
+"""Backend local por defecto: SQLite en la raíz del repositorio (ignorado por git)."""
 
 EPOCH_METRICS: dict[str, str] = {
     "train_loss": "train_loss",
