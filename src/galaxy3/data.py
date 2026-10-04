@@ -12,7 +12,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
+from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 from torchvision.datasets import ImageFolder
@@ -104,6 +106,45 @@ def load_dataset_stats(data_root: Path) -> dict[str, Any]:
             f"No existe {path}; ejecuta primero galaxy3/scripts/prepare_galaxy3.py."
         )
     return json.loads(path.read_text())
+
+
+def load_original_samples(
+    data_root: Path, split: str = "train", per_class: int = 4, seed: int = 0
+) -> dict[str, list[Image.Image]]:
+    """Carga imágenes originales por clase, **sin ninguna transformación** (para visualizar).
+
+    Las imágenes son las exportadas por la preparación (256x256, composición en falso color
+    de las bandas g, r, z). La selección es reproducible con ``seed`` y no consume el RNG
+    global.
+
+    Args:
+        data_root: Carpeta con ``train/``, ``val/`` y ``test/`` en formato ``ImageFolder``.
+        split: ``"train"``, ``"val"`` o ``"test"``.
+        per_class: Número de imágenes por clase (>= 1).
+        seed: Semilla de la selección.
+
+    Returns:
+        ``{class_name: [PIL.Image, ...]}`` en el orden de las clases (índice = etiqueta).
+
+    Raises:
+        ValueError: Si ``split`` no es válido, ``per_class < 1`` o alguna clase tiene menos
+            de ``per_class`` imágenes.
+    """
+    if split not in ("train", "val", "test"):
+        raise ValueError(f"split debe ser 'train', 'val' o 'test'; se recibió {split!r}")
+    if per_class < 1:
+        raise ValueError(f"per_class debe ser >= 1; se recibió {per_class}")
+    dataset = ImageFolder(Path(data_root) / split)
+    targets = np.asarray(dataset.targets)
+    rng = np.random.default_rng(seed)
+    samples: dict[str, list[Image.Image]] = {}
+    for label, name in enumerate(dataset.classes):
+        indices = np.flatnonzero(targets == label)
+        if len(indices) < per_class:
+            raise ValueError(f"La clase {name!r} tiene {len(indices)} imágenes (< {per_class})")
+        chosen = np.sort(rng.choice(indices, size=per_class, replace=False))
+        samples[name] = [dataset.loader(dataset.samples[i][0]) for i in chosen]
+    return samples
 
 
 def check_stats_match_config(stats: dict[str, Any], config: ExperimentConfig) -> None:

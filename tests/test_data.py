@@ -11,6 +11,7 @@ from galaxy3.data import (
     DATASET_STATS_NAME,
     build_base_transform,
     compute_channel_stats,
+    load_original_samples,
     make_dataloaders,
 )
 
@@ -209,3 +210,25 @@ def test_missing_stats_raises(config):
     (config.data_root / DATASET_STATS_NAME).unlink()
     with pytest.raises(FileNotFoundError, match="prepare_galaxy3"):
         make_dataloaders(config)
+
+
+def test_load_original_samples_untransformed_and_reproducible(image_folder):
+    samples = load_original_samples(image_folder, split="val", per_class=2, seed=0)
+
+    assert list(samples) == CLASSES
+    for label, images in enumerate(samples.values()):
+        assert len(images) == 2
+        assert all(image.size == (24, 24) and image.mode == "RGB" for image in images)
+        assert all(image.getpixel((0, 0))[0] == _class_red(label) for image in images)
+    again = load_original_samples(image_folder, split="val", per_class=2, seed=0)
+    ids = [[im.getpixel((0, 0))[1] for im in v] for v in samples.values()]
+    assert ids == [[im.getpixel((0, 0))[1] for im in v] for v in again.values()]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [({"split": "all"}, "split"), ({"per_class": 0}, "per_class"), ({"per_class": 5}, "< 5")],
+)
+def test_load_original_samples_rejects_invalid_arguments(image_folder, kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        load_original_samples(image_folder, **{"split": "val", **kwargs})

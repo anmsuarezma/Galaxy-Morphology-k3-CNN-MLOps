@@ -112,6 +112,32 @@ def collect_predictions(
     )
 
 
+def misclassified_indices(predictions: Predictions, max_count: int | None = None) -> torch.Tensor:
+    """Índices de las muestras mal clasificadas, de mayor a menor confianza en el error.
+
+    La confianza es la probabilidad asignada a la clase predicha: los primeros índices son
+    los errores en los que el modelo estaba más seguro. Sirve para elegir qué ejemplos de
+    error mostrar con ``plots.plot_predictions``.
+
+    Args:
+        predictions: Salida de ``collect_predictions`` (con loader sin barajar, el índice
+            ``i`` corresponde a ``loader.dataset[i]``).
+        max_count: Máximo de índices a devolver (>= 0), o ``None`` para todos.
+
+    Returns:
+        Tensor ``long`` 1D en CPU, posiblemente vacío si no hay errores.
+
+    Raises:
+        ValueError: Si ``max_count`` es negativo.
+    """
+    if max_count is not None and max_count < 0:
+        raise ValueError(f"max_count debe ser >= 0 o None; se recibió {max_count}")
+    wrong = torch.nonzero(predictions.y_pred != predictions.y_true).flatten()
+    confidence = predictions.probabilities[wrong, predictions.y_pred[wrong]]
+    ordered = wrong[torch.argsort(confidence, descending=True, stable=True)]
+    return ordered if max_count is None else ordered[:max_count]
+
+
 def _check_labels(y_true: torch.Tensor, y_pred: torch.Tensor, num_classes: int | None) -> None:
     """Exige tensores enteros 1D, no vacíos, de igual forma y (si se da K) en ``[0, K)``."""
     if num_classes is not None and num_classes < 1:

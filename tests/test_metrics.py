@@ -27,12 +27,14 @@ from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from galaxy3.metrics import (
+    Predictions,
     accuracy,
     classification_report,
     collect_predictions,
     confusion_matrix,
     generalization_gap,
     macro_f1,
+    misclassified_indices,
     per_class_metrics,
 )
 from galaxy3.models import GalaxyCNN
@@ -205,3 +207,22 @@ def test_collect_predictions_matches_direct_forward_and_leaves_model_in_eval():
 
     report = classification_report(predictions.y_true, predictions.y_pred, num_classes=3)
     assert report.accuracy == pytest.approx(predictions.accuracy)
+
+
+def test_misclassified_indices_sorted_by_confidence():
+    # Errores en las posiciones 1 (p=0.6), 3 (p=0.9) y 4 (p=0.5); la 0 y la 2 aciertan.
+    probabilities = torch.tensor(
+        [[0.8, 0.1, 0.1], [0.6, 0.3, 0.1], [0.1, 0.1, 0.8], [0.05, 0.9, 0.05], [0.2, 0.3, 0.5]]
+    )
+    predictions = Predictions(
+        y_true=torch.tensor([0, 1, 2, 0, 1]),
+        y_pred=probabilities.argmax(dim=1),
+        probabilities=probabilities,
+        loss=0.0,
+        accuracy=0.4,
+    )
+    assert misclassified_indices(predictions).tolist() == [3, 1, 4]
+    assert misclassified_indices(predictions, max_count=2).tolist() == [3, 1]
+    assert misclassified_indices(predictions, max_count=0).tolist() == []
+    with pytest.raises(ValueError):
+        misclassified_indices(predictions, max_count=-1)
