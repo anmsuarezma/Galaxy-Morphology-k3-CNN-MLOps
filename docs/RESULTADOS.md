@@ -1,8 +1,8 @@
 # Galaxy3 — Resultados del Experimento 1 (Fase 13)
 
 > Runs definitivos A, B y C y selección de configuración **con validation**
-> (secciones 16 y 17 de la spec). Todavía **sin resultados de test**: `evaluate_on_test` no
-> se ha ejecutado.
+> (secciones 16 y 17 de la spec). La selección se hizo antes de ver test. La evaluación
+> final en test de la configuración elegida (C) se ejecutó una sola vez y está al final.
 
 ## Runs verificados
 
@@ -11,7 +11,7 @@ Verificado en MLflow:
 
 - los tres están `FINISHED`, con 40 épocas registradas;
 - parámetros: `epochs=40`, `deterministic=True`, `num_workers=0`, `train_seed=2026`;
-- ninguno tiene métricas de test;
+- en el momento de la selección, ninguno tenía métricas de test;
 - el JSON local de métricas de cada run tiene el mismo `run_id`, las mismas métricas
   finales y la misma curva de `val_loss` que MLflow.
 
@@ -92,7 +92,73 @@ métricas de cada run (sin recalcular nada ni abrir test). Están en
 - `val_confusion_matrix_batchnorm.png`
 - `val_confusion_matrix_batchnorm_dropout.png`
 
-## Pendiente
+## Evaluación final en test
 
-- `evaluate_on_test` sobre el checkpoint de C, una sola vez, tras aprobación explícita.
-  Sus resultados se agregarán aquí sin modificar la selección.
+`evaluate_on_test` se ejecutó **una sola vez**, tras aprobación explícita, sobre el best
+checkpoint de C (`outputs/checkpoints/batchnorm_dropout_best.pt`, época 12). La config se
+reconstruyó desde el propio checkpoint. Los resultados quedaron registrados en el run de
+C (`24df078485004e82a8d5a04ed27a15eb`), que sigue `FINISHED`, con los artifacts en `test/`.
+A y B no se evaluaron en test. La selección de C no se modifica.
+
+### Validation frente a test (C, mismo checkpoint)
+
+Hay 917 imágenes en cada split.
+
+| Métrica | Validation | Test | Diferencia (test − val) |
+|---|---|---|---|
+| loss | 0.1253 | 0.1121 | −0.0132 |
+| accuracy | 0.9597 (37 errores) | 0.9586 (38 errores) | −0.0011 (1 imagen) |
+| macro F1 | 0.9594 | 0.9600 | +0.0006 |
+
+`train_acc_eval − test_acc` = 0.9705 − 0.9586 = **+0.0120**. En validation, el
+`generalization_gap` era +0.0109.
+
+### Por clase
+
+| Clase | Precision val / test | Recall val / test | F1 val / test |
+|---|---|---|---|
+| `barred_spiral` | 0.956 / 0.979 | 0.928 / **0.895** | 0.942 / 0.935 |
+| `edge_on_no_bulge` | 0.963 / 0.977 | 0.972 / 0.986 | 0.967 / 0.981 |
+| `round_smooth` | 0.960 / 0.936 | 0.977 / **0.992** | 0.969 / 0.963 |
+
+### Matriz de confusión de test
+
+Filas = clase real, columnas = predicha.
+
+| | `barred_spiral` | `edge_on_no_bulge` | `round_smooth` |
+|---|---|---|---|
+| `barred_spiral` | **274** | 5 | 27 |
+| `edge_on_no_bulge` | 3 | **211** | 0 |
+| `round_smooth` | 3 | 0 | **394** |
+
+En validation, la matriz de C era `[[285, 7, 15], [5, 207, 1], [8, 1, 388]]`.
+
+### Lectura
+
+- **Las métricas globales se mantienen.** Accuracy y macro F1 de test quedan a menos de
+  una imagen de las de validation, y la loss de test es incluso menor.
+- **El error se vuelve más asimétrico.** De los 38 errores de test, 27 son espirales
+  barradas predichas como `round_smooth`, y solo 3 en sentido contrario. En validation
+  eran 15 y 8. El recall de `barred_spiral` baja de 0.928 a 0.895, y el de
+  `round_smooth` sube de 0.977 a 0.992. Es la misma confusión dominante de la sección
+  de validation, ahora sesgada hacia `round_smooth`.
+- **Sesgo de selección.** El checkpoint se eligió como el argmin de `val_loss` en un valle
+  aislado (época 12: 0.125, entre 0.65 y 0.84). Por construcción, ese valor de validation
+  es una estimación optimista: el mínimo de una curva ruidosa tiende a caer donde el ruido
+  favoreció a validation. Lo esperable sería una métrica de test algo peor. En este run
+  **no se observa esa degradación**: las diferencias entre validation y test son del
+  orden de 1 imagen y tienen signos mixtos (la loss mejora, accuracy pierde 1 imagen,
+  macro F1 sube). Con una sola semilla y un solo split no se puede separar el sesgo de
+  selección de la variación de muestreo entre validation y test. El sesgo existe como
+  mecanismo, pero aquí no es medible.
+- **Este número no se usa para nada más.** No reabre la comparación A/B/C ni cambia la
+  selección, porque A y B no tienen métricas de test (sección 15.2 de la spec).
+
+### Figuras de test
+
+En `galaxy3/outputs/figures/` (no versionadas) y en el run de MLflow, carpeta `test/`:
+
+- `batchnorm_dropout_test_confusion_matrix.png`
+- `batchnorm_dropout_test_errors.png`
+
+Las métricas completas están en `galaxy3/outputs/metrics/batchnorm_dropout_test.json`.
