@@ -108,9 +108,11 @@ Hay 917 imágenes en cada split.
 |---|---|---|---|
 | loss | 0.1253 | 0.1121 | −0.0132 |
 | accuracy | 0.9597 (37 errores) | 0.9586 (38 errores) | −0.0011 (1 imagen) |
-| macro F1 | 0.9594 | 0.9600 | +0.0006 |
+| macro F1 | 0.9594 | 0.9600 | +0.0005 |
 
-`train_acc_eval − test_acc` = 0.9705 − 0.9586 = **+0.0120**. En validation, el
+Las diferencias se calculan con los valores sin redondear, y se redondean solo al final.
+
+`train_acc_eval − test_acc` = 0.97054 − 0.95856 = **+0.0120**. En validation, el
 `generalization_gap` era +0.0109.
 
 ### Por clase
