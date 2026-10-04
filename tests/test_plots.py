@@ -20,12 +20,15 @@ from PIL import Image  # noqa: E402
 
 from galaxy3.plots import (  # noqa: E402
     FALSE_COLOR_NOTE,
+    RUN_COLORS,
+    RUN_LINESTYLES,
     denormalize,
     plot_confusion_matrix,
     plot_feature_maps,
     plot_image_batch,
     plot_original_galaxies,
     plot_predictions,
+    plot_runs_comparison,
     plot_training_curves,
 )
 
@@ -187,6 +190,64 @@ def test_plot_training_curves(close_figures):
     assert list(ax_loss.lines[1].get_ydata()) == history["val_loss"]
     assert list(ax_acc.lines[0].get_ydata()) == history["train_acc"]
     assert "mejor época = 2" in _suptitle(fig)
+
+
+def _history(val_loss: list[float], val_acc: list[float], best_epoch: int) -> dict:
+    n = len(val_loss)
+    return {
+        "train_loss": [0.5] * n,
+        "train_acc": [0.8] * n,
+        "val_loss": val_loss,
+        "val_acc": val_acc,
+        "lr": [1e-3] * n,
+        "epoch_time": [1.0] * n,
+        "best_epoch": best_epoch,
+        "best_val_loss": val_loss[best_epoch - 1],
+    }
+
+
+def test_plot_runs_comparison_one_line_and_marker_per_run(close_figures):
+    histories = {
+        "baseline": _history([0.9, 0.6, 0.7], [0.5, 0.7, 0.72], best_epoch=2),
+        "batchnorm": _history([0.8, 0.5, 0.55, 0.6], [0.6, 0.8, 0.8, 0.81], best_epoch=2),
+        "batchnorm_dropout": _history([0.85, 0.55, 0.5], [0.55, 0.75, 0.8], best_epoch=3),
+    }
+    fig = plot_runs_comparison(histories)
+
+    assert isinstance(fig, Figure)
+    ax_loss, ax_acc = fig.axes
+    for ax, key in ((ax_loss, "val_loss"), (ax_acc, "val_acc")):
+        curves, markers = ax.lines[0::2], ax.lines[1::2]
+        assert [line.get_label() for line in curves] == list(histories)
+        for line, history in zip(curves, histories.values(), strict=True):
+            assert list(line.get_ydata()) == history[key]
+        assert [list(m.get_ydata()) for m in markers] == [
+            [h[key][h["best_epoch"] - 1]] for h in histories.values()
+        ]
+        assert [c.get_color() for c in curves] == list(RUN_COLORS[:3])
+        assert [c.get_linestyle() for c in curves] == ["-", "--", ":"]
+        legend = ax.get_legend()
+        assert [t.get_text() for t in legend.get_texts()] == list(histories)
+        assert [h.get_linestyle() for h in legend.get_lines()] == ["-", "--", ":"]
+
+
+def test_run_styles_are_aligned_and_distinct():
+    assert len(RUN_LINESTYLES) == len(RUN_COLORS)
+    assert len(set(map(str, RUN_LINESTYLES))) == len(RUN_LINESTYLES)
+    assert len(set(RUN_COLORS)) == len(RUN_COLORS)
+
+
+@pytest.mark.parametrize(
+    "histories",
+    [
+        {},
+        {"a": _history([0.5], [0.5], best_epoch=1) | {"val_acc": []}},
+        {f"run{i}": _history([0.5], [0.5], best_epoch=1) for i in range(len(RUN_COLORS) + 1)},
+    ],
+)
+def test_plot_runs_comparison_rejects_invalid_input(histories):
+    with pytest.raises(ValueError):
+        plot_runs_comparison(histories)
 
 
 def test_plot_confusion_matrix_annotates_counts(close_figures):

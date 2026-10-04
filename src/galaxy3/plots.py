@@ -34,6 +34,11 @@ TRAIN_COLOR = "#2a78d6"
 VAL_COLOR = "#eb6834"
 CORRECT_COLOR = "#0ca30c"
 WRONG_COLOR = "#d03b3b"
+RUN_COLORS = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300")
+"""Colores categóricos por run, en orden fijo (el run i siempre recibe ``RUN_COLORS[i]``)."""
+RUN_LINESTYLES = ("-", "--", ":", "-.", (0, (5, 1, 1, 1, 1, 1)), (0, (10, 3)))
+"""Estilo de línea por run, en el mismo orden fijo que ``RUN_COLORS``: la identidad del run
+no depende solo del color (proyector, escala de grises, daltonismo)."""
 SEQUENTIAL_CMAP = LinearSegmentedColormap.from_list(
     "galaxy3_blues", ["#f5f9fe", "#9ec5f4", "#3987e5", "#1c5cab", "#0d366b"]
 )
@@ -140,6 +145,59 @@ def plot_training_curves(history: History) -> Figure:
     ax_acc.set_ylim(0, 1.0)
     fig.suptitle(
         f"Curvas de entrenamiento (línea discontinua: mejor época = {history['best_epoch']})",
+        color=TEXT_PRIMARY,
+    )
+    return fig
+
+
+def _check_run_histories(histories: Mapping[str, History]) -> None:
+    if not histories or len(histories) > len(RUN_COLORS):
+        raise ValueError(f"histories debe tener entre 1 y {len(RUN_COLORS)} runs")
+    for name, history in histories.items():
+        n_loss, n_acc = len(history["val_loss"]), len(history["val_acc"])
+        if n_loss == 0 or n_loss != n_acc:
+            raise ValueError(f"history de {name!r} vacío o inconsistente: {n_loss} vs {n_acc}")
+
+
+def plot_runs_comparison(histories: Mapping[str, History]) -> Figure:
+    """Superpone ``val_loss`` y ``val_acc`` de varios runs, con color y estilo fijos por run.
+
+    El run ``i`` (en el orden de ``histories``) usa ``RUN_COLORS[i]`` y
+    ``RUN_LINESTYLES[i]``, para que se distinga también sin color. Loss y accuracy van en
+    paneles separados (escalas distintas). Un marcador señala la mejor época de cada run
+    (mínimo de ``val_loss``) en ambos paneles: en accuracy marca la ``val_acc`` del
+    checkpoint que se conserva, no el máximo de ``val_acc``. Los runs pueden tener
+    distinto número de épocas.
+
+    Args:
+        histories: ``{nombre_run: history}`` en el orden en que se quieren los colores;
+            cada history es la salida de ``engine.fit`` (o ``ExperimentResult.history``).
+
+    Returns:
+        Figura con dos paneles y una leyenda con los nombres de los runs.
+
+    Raises:
+        ValueError: Si no hay runs, hay más de ``len(RUN_COLORS)`` o algún history está
+            vacío o tiene ``val_loss`` y ``val_acc`` de longitudes distintas.
+    """
+    _check_run_histories(histories)
+    fig, (ax_loss, ax_acc) = plt.subplots(1, 2, figsize=(11, 4), constrained_layout=True)
+    panels = ((ax_loss, "val_loss", "Loss de validation"), (ax_acc, "val_acc", "Accuracy"))
+    for ax, key, ylabel in panels:
+        _style_axes(ax)
+        styles = zip(RUN_COLORS, RUN_LINESTYLES, strict=True)
+        for (color, linestyle), (name, history) in zip(styles, histories.items(), strict=False):
+            epochs = np.arange(1, len(history[key]) + 1)
+            ax.plot(epochs, history[key], color=color, ls=linestyle, lw=2, label=name)
+            best = history["best_epoch"]
+            if 1 <= best <= len(history[key]):
+                ax.plot(best, history[key][best - 1], "o", color=color, ms=8, mec="white")
+        ax.set_xlabel("Época", color=TEXT_PRIMARY)
+        ax.set_ylabel(ylabel, color=TEXT_PRIMARY)
+        ax.legend(frameon=False, labelcolor=TEXT_PRIMARY)
+    ax_acc.set_ylim(0, 1.0)
+    fig.suptitle(
+        "Comparación de runs en validation (marcador: mejor época por val_loss)",
         color=TEXT_PRIMARY,
     )
     return fig
