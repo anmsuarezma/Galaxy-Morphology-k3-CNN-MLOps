@@ -134,7 +134,7 @@ def check_stats_match_config(stats: dict[str, Any], config: ExperimentConfig) ->
 def build_transform(
     config: ExperimentConfig, mean: list[float], std: list[float]
 ) -> transforms.Compose:
-    """Pipeline completo de entrada al modelo: base (crop, ``Resize``, ``ToTensor``) + ``Normalize``.
+    """Pipeline de entrada al modelo: base (crop, ``Resize``, ``ToTensor``) + ``Normalize``.
 
     Args:
         config: Aporta ``image_size`` y ``center_crop``.
