@@ -8,6 +8,8 @@ fijadas aquí.
 from __future__ import annotations
 
 import json
+import multiprocessing
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -26,6 +28,41 @@ DATASET_STATS_NAME = "dataset_stats.json"
 """Archivo que escribe la preparación en ``data_root`` (split_seed, clases, mean/std)."""
 
 SPLITS: tuple[str, ...] = ("train", "val", "test")
+
+
+def worker_context(num_workers: int) -> str | None:
+    """Contexto de multiprocessing para los workers del ``DataLoader``.
+
+    En Linux el default es ``fork``, y hacer fork de un proceso con hilos (CUDA, MLflow,
+    OpenMP) puede dejar un worker bloqueado (``docs/PILOTO.md``). Por eso en Linux se usa
+    ``forkserver``: los workers nacen de un proceso servidor sin hilos. macOS y Windows ya
+    usan ``spawn`` por defecto y conservan su contexto. Con ``forkserver`` o ``spawn`` el
+    dataset, sus transforms y ``worker_init_fn`` deben ser picklables.
+
+    Args:
+        num_workers: Workers del ``DataLoader`` (>= 0).
+
+    Returns:
+        ``"forkserver"`` en Linux con ``num_workers > 0``; ``None`` (contexto por defecto)
+        en otro caso. ``DataLoader`` no acepta un contexto con ``num_workers=0``.
+    """
+    return "forkserver" if num_workers > 0 and sys.platform.startswith("linux") else None
+
+
+def _loader_context(num_workers: int) -> str | None:
+    """``worker_context`` + precarga de los módulos de datos en el servidor ``forkserver``.
+
+    Sin precarga, cada worker importa de nuevo torch y torchvision (medido con 8 workers
+    en Jupyter: ~16 s hasta el primer batch frente a ~2 s con precarga). Los módulos
+    precargados se importan una vez en el servidor y los workers los heredan. Solo se
+    precargan módulos que no crean hilos al importarse: precargar, por ejemplo, MLflow
+    dejaría hilos en el servidor y volvería el riesgo de fork. La precarga solo tiene
+    efecto antes de que el servidor arranque (con el primer loader con workers).
+    """
+    context = worker_context(num_workers)
+    if context == "forkserver":
+        multiprocessing.set_forkserver_preload(["__main__", "torch", "torchvision", "galaxy3.data"])
+    return context
 
 
 def build_base_transform(image_size: int, center_crop: int | None = None) -> transforms.Compose:
@@ -82,7 +119,13 @@ def compute_channel_stats(
         raise ValueError(f"batch_size >= 1 y num_workers >= 0 (son {batch_size}, {num_workers})")
     if len(dataset) == 0:  # type: ignore[arg-type]
         raise ValueError("El dataset está vacío; no se pueden calcular estadísticas.")
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        multiprocessing_context=_loader_context(num_workers),
+    )
     total = sq_total = None
     n_pixels = 0
     for X, _ in loader:
@@ -218,6 +261,7 @@ def _make_loader(
         num_workers=config.num_workers,
         pin_memory=device.type == "cuda",
         persistent_workers=config.num_workers > 0,
+        multiprocessing_context=_loader_context(config.num_workers),
         worker_init_fn=seed_worker,
         generator=make_generator(config.train_seed),
     )

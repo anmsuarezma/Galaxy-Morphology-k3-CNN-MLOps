@@ -1,4 +1,8 @@
 import json
+import pickle
+import sys
+import threading
+import warnings
 from dataclasses import replace
 
 import pytest
@@ -13,6 +17,8 @@ from galaxy3.data import (
     compute_channel_stats,
     load_original_samples,
     make_dataloaders,
+    make_split_loader,
+    worker_context,
 )
 
 CLASSES = ["barred_spiral", "edge_on_no_bulge", "round_smooth"]
@@ -171,6 +177,66 @@ def test_order_with_workers_matches_seed(config):
     loaders = make_dataloaders(with_workers)
     assert loaders.train.persistent_workers
     assert _image_ids(loaders.train) == _image_ids(make_dataloaders(config).train)
+
+
+@pytest.mark.parametrize(
+    ("platform", "num_workers", "expected"),
+    [
+        ("linux", 2, "forkserver"),
+        ("linux", 0, None),
+        ("darwin", 2, None),
+        ("win32", 2, None),
+    ],
+)
+def test_worker_context_by_platform(monkeypatch, platform, num_workers, expected):
+    monkeypatch.setattr(sys, "platform", platform)
+    assert worker_context(num_workers) == expected
+
+
+def test_dataset_transform_and_worker_init_are_picklable(config):
+    loader = make_split_loader(config, "train")
+    for obj in (loader.dataset, loader.dataset.transform, loader.worker_init_fn):
+        pickle.loads(pickle.dumps(obj))
+
+
+def test_loaders_without_workers_keep_default_context(config):
+    loaders = make_dataloaders(config)
+    for loader in (loaders.train, loaders.val, loaders.test):
+        assert loader.multiprocessing_context is None
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="forkserver solo en Linux")
+def test_workers_use_forkserver_without_fork_warning(config):
+    # Python solo advierte sobre fork() si el proceso tiene hilos: se mantiene uno vivo,
+    # como los de CUDA o MLflow durante un run real.
+    stop = threading.Event()
+    thread = threading.Thread(target=stop.wait)
+    thread.start()
+    try:
+        caught = _iterate_with_workers(replace(config, num_workers=2))
+    finally:
+        stop.set()
+        thread.join()
+    assert not [w for w in caught if "fork()" in str(w.message)]
+
+
+def _iterate_with_workers(with_workers):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        loaders = make_dataloaders(with_workers)
+        for loader in (loaders.train, loaders.val):
+            assert loader.multiprocessing_context.get_start_method() == "forkserver"
+            for X, y in loader:
+                assert torch.equal((X[:, 0, 0, 0] * 255).round().long(), 60 * (y + 1))
+    return caught
+
+
+def test_channel_stats_with_workers_match_without():
+    X = torch.rand(10, 3, 8, 8)
+    dataset = TensorDataset(X, torch.zeros(10, dtype=torch.long))
+    assert compute_channel_stats(dataset, batch_size=3, num_workers=2) == compute_channel_stats(
+        dataset, batch_size=3
+    )
 
 
 def test_loader_flags_depend_on_device_and_workers(config):
