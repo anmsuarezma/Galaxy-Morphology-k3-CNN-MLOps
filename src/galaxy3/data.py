@@ -25,6 +25,8 @@ from galaxy3.utils import get_device, make_generator, seed_worker
 DATASET_STATS_NAME = "dataset_stats.json"
 """Archivo que escribe la preparación en ``data_root`` (split_seed, clases, mean/std)."""
 
+SPLITS: tuple[str, ...] = ("train", "val", "test")
+
 
 def build_base_transform(image_size: int, center_crop: int | None = None) -> transforms.Compose:
     """Transformación geométrica + ``ToTensor``, sin normalizar.
@@ -221,53 +223,73 @@ def _make_loader(
     )
 
 
-def make_dataloaders(config: ExperimentConfig, device: torch.device | None = None) -> DataLoaders:
-    """Construye los loaders de train, val y test desde ``config.data_root``.
+def make_split_loader(
+    config: ExperimentConfig, split: str, device: torch.device | None = None
+) -> DataLoader:
+    """Construye el loader de **un solo** split desde ``config.data_root / split``.
 
-    Train usa ``shuffle=True`` con un generador sembrado con ``train_seed``: misma
-    ``train_seed`` -> mismo orden de batches. Val y test usan ``shuffle=False``.
-    ``pin_memory`` solo se activa en CUDA; ``persistent_workers`` solo con
-    ``num_workers > 0``.
-
-    El loader de test se devuelve para la evaluación final explícita
-    (``evaluate_on_test``); no debe pasarse a ``fit``.
+    Solo se crea el ``ImageFolder`` del split pedido: ``run_experiment`` pide train y val,
+    y nunca toca la carpeta de test. Train usa ``shuffle=True`` con un generador sembrado
+    con ``train_seed`` (misma ``train_seed`` -> mismo orden de batches); val y test usan
+    ``shuffle=False``. ``pin_memory`` solo se activa en CUDA; ``persistent_workers``
+    solo con ``num_workers > 0``.
 
     Args:
         config: Configuración del experimento.
+        split: ``"train"``, ``"val"`` o ``"test"``.
         device: Device de entrenamiento; solo decide ``pin_memory``. Si es ``None``,
             se resuelve con ``get_device(config.device_preference)``.
 
     Returns:
-        ``DataLoaders`` con batches ``X`` de forma ``(B, 3, image_size, image_size)``
-        (``float32``, normalizados) e ``y`` de forma ``(B,)`` (``int64``).
+        Loader cuyo ``dataset`` es un ``ImageFolder`` (``dataset.classes`` = nombres de
+        clase, índice = etiqueta), con batches ``X`` de forma
+        ``(B, 3, image_size, image_size)`` (``float32``, normalizados) e ``y`` de forma
+        ``(B,)`` (``int64``).
+
+    Raises:
+        FileNotFoundError: Si falta ``dataset_stats.json``.
+        ValueError: Si ``split`` no es válido, ``dataset_stats.json`` no coincide con
+            ``config`` o las clases de la carpeta no coinciden con las registradas en la
+            preparación o con ``config.num_classes``.
+    """
+    if split not in SPLITS:
+        raise ValueError(f"split debe ser uno de {SPLITS}; se recibió {split!r}")
+    stats = load_dataset_stats(config.data_root)
+    check_stats_match_config(stats, config)
+    device = device if device is not None else get_device(config.device_preference)
+    transform = build_transform(config, stats["mean_train"], stats["std_train"])
+    dataset = ImageFolder(config.data_root / split, transform=transform)
+    if dataset.class_to_idx != stats["class_to_label"]:
+        raise ValueError(
+            f"Clases de {split} ({dataset.class_to_idx}) no coinciden con "
+            f"dataset_stats.json ({stats['class_to_label']})"
+        )
+    if len(dataset.classes) != config.num_classes:
+        raise ValueError(
+            f"config.num_classes={config.num_classes}, pero hay "
+            f"{len(dataset.classes)} clases en {config.data_root / split}"
+        )
+    return _make_loader(dataset, config, device, shuffle=split == "train")
+
+
+def make_dataloaders(config: ExperimentConfig, device: torch.device | None = None) -> DataLoaders:
+    """Construye los loaders de train, val y test (ver ``make_split_loader``).
+
+    Útil para inspección en el notebook. ``run_experiment`` no la usa: construye solo
+    train y val. El loader de test es para la evaluación final explícita
+    (``evaluate_on_test``); no debe pasarse a ``fit``.
+
+    Args:
+        config: Configuración del experimento.
+        device: Device de entrenamiento; solo decide ``pin_memory``.
+
+    Returns:
+        ``DataLoaders`` con los tres splits y los nombres de clase.
 
     Raises:
         FileNotFoundError: Si falta ``dataset_stats.json``.
         ValueError: Si ``dataset_stats.json`` no coincide con ``config`` o las clases de
             las carpetas no coinciden con las registradas en la preparación.
     """
-    stats = load_dataset_stats(config.data_root)
-    check_stats_match_config(stats, config)
-    device = device if device is not None else get_device(config.device_preference)
-    transform = build_transform(config, stats["mean_train"], stats["std_train"])
-    datasets = {
-        split: ImageFolder(config.data_root / split, transform=transform)
-        for split in ("train", "val", "test")
-    }
-    for split, dataset in datasets.items():
-        if dataset.class_to_idx != stats["class_to_label"]:
-            raise ValueError(
-                f"Clases de {split} ({dataset.class_to_idx}) no coinciden con "
-                f"dataset_stats.json ({stats['class_to_label']})"
-            )
-    if len(datasets["train"].classes) != config.num_classes:
-        raise ValueError(
-            f"config.num_classes={config.num_classes}, pero hay "
-            f"{len(datasets['train'].classes)} clases en {config.data_root}"
-        )
-    return DataLoaders(
-        train=_make_loader(datasets["train"], config, device, shuffle=True),
-        val=_make_loader(datasets["val"], config, device, shuffle=False),
-        test=_make_loader(datasets["test"], config, device, shuffle=False),
-        class_names=list(datasets["train"].classes),
-    )
+    loaders = {split: make_split_loader(config, split, device) for split in SPLITS}
+    return DataLoaders(**loaders, class_names=list(loaders["train"].dataset.classes))
