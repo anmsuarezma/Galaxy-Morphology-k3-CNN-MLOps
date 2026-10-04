@@ -36,6 +36,7 @@ from galaxy3.metrics import (
     macro_f1,
     misclassified_indices,
     per_class_metrics,
+    report_from_confusion_matrix,
 )
 from galaxy3.models import GalaxyCNN
 
@@ -99,6 +100,20 @@ def test_classification_report_by_hand():
     _approx(report.recall, [2 / 3, 0.5, 1.0])
     _approx(report.f1, [0.8, 0.5, 2 / 3])
     assert report.macro_f1 == pytest.approx(59 / 90)
+
+
+def test_report_from_confusion_matrix_equals_classification_report():
+    report = classification_report(Y_TRUE, Y_PRED, num_classes=3)
+    rebuilt = report_from_confusion_matrix(torch.tensor(report.confusion_matrix.tolist()))
+    assert rebuilt.accuracy == report.accuracy
+    assert rebuilt.macro_f1 == report.macro_f1
+    for name in ("confusion_matrix", "precision", "recall", "f1"):
+        assert torch.equal(getattr(rebuilt, name), getattr(report, name))
+
+
+def test_report_from_confusion_matrix_rejects_empty_matrix():
+    with pytest.raises(ValueError, match="muestras"):
+        report_from_confusion_matrix(torch.zeros(3, 3, dtype=torch.long))
 
 
 def test_classification_report_matches_sklearn_on_random_labels():

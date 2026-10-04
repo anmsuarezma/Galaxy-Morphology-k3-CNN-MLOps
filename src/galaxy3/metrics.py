@@ -265,8 +265,28 @@ def classification_report(
     Raises:
         ValueError: Si las entradas no cumplen el contrato.
     """
-    cm = confusion_matrix(y_true, y_pred, num_classes).cpu()
+    return report_from_confusion_matrix(confusion_matrix(y_true, y_pred, num_classes))
+
+
+def report_from_confusion_matrix(cm: torch.Tensor) -> ClassificationReport:
+    """Reporte de clasificación a partir de una matriz de confusión ya calculada.
+
+    Permite reconstruir el reporte desde la matriz guardada en un JSON de métricas, con
+    exactamente las mismas operaciones que ``classification_report``.
+
+    Args:
+        cm: Matriz ``(K, K)`` no negativa, filas = real, columnas = predicha.
+
+    Returns:
+        El reporte, con los tensores en CPU.
+
+    Raises:
+        ValueError: Si ``cm`` no es cuadrada, tiene entradas negativas o suma 0.
+    """
+    cm = cm.cpu()
     precision, recall, f1 = per_class_metrics(cm)
+    if cm.sum() == 0:
+        raise ValueError("cm no tiene muestras")
     return ClassificationReport(
         accuracy=(cm.diagonal().sum() / cm.sum()).item(),
         confusion_matrix=cm,

@@ -27,6 +27,11 @@ params al iniciar el run; métricas por época (``step=epoch``) recorriendo el h
 después de ``fit``; métricas finales sin step; config, métricas, figuras y checkpoint
 como artifacts. ``engine``, ``metrics`` y ``plots`` no conocen MLflow.
 
+Lectura sin reentrenar: ``find_run_id``, ``load_run_result`` (reconstruye el
+``ExperimentResult`` de un run registrado) y ``load_test_evaluation`` (lee la evaluación de
+test ya registrada, sin volver a evaluar). Los artifacts se descargan a
+``outputs/mlflow_downloads/<run_id>/``.
+
 Tracking URI: ``MLFLOW_TRACKING_URI`` si existe; si no, ``sqlite:///<galaxy3>/mlflow.db``
 (el backend local por defecto de MLflow 3). Con un backend SQLite los artifacts se guardan
 en ``mlruns/`` junto a la base, sin depender del directorio actual.
@@ -35,6 +40,7 @@ en ``mlruns/`` junto a la base, sin depender del directorio actual.
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,10 +64,18 @@ from galaxy3.metrics import (
     collect_predictions,
     generalization_gap,
     misclassified_indices,
+    report_from_confusion_matrix,
 )
 from galaxy3.models import GalaxyCNN, count_parameters, count_trainable_parameters
 from galaxy3.plots import plot_confusion_matrix, plot_predictions, plot_training_curves
-from galaxy3.utils import PROJECT_ROOT, OutputDirs, get_device, prepare_output_dirs, set_seed
+from galaxy3.utils import (
+    PROJECT_ROOT,
+    OutputDirs,
+    ensure_dir,
+    get_device,
+    prepare_output_dirs,
+    set_seed,
+)
 
 MODEL_NAME = "GalaxyCNN"
 OPTIMIZER_NAME = "AdamW"
@@ -122,6 +136,26 @@ class SplitEvaluation:
             "per_class": per_class,
             "confusion_matrix": report.confusion_matrix.tolist(),
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SplitEvaluation:
+        """Reconstruye la evaluación desde ``to_dict()``.
+
+        El reporte se recalcula desde la matriz de confusión guardada, y se exige que
+        coincida con la accuracy y el macro F1 guardados.
+
+        Raises:
+            ValueError: Si la matriz no es válida o no coincide con las métricas guardadas.
+        """
+        report = report_from_confusion_matrix(
+            torch.tensor(data["confusion_matrix"], dtype=torch.long)
+        )
+        _check_values_match(
+            {"accuracy": report.accuracy, "macro_f1": report.macro_f1},
+            data,
+            "la matriz de confusión guardada",
+        )
+        return cls(loss=float(data["loss"]), report=report)
 
 
 @dataclass(frozen=True)
@@ -722,4 +756,202 @@ def evaluate_on_test(checkpoint_path: Path, config: ExperimentConfig) -> FinalEv
     )
     _write_json(result.metrics_path, result.to_dict())
     _log_test_results(result)
+    return result
+
+
+# ------------------------------------------------------ lectura de runs registrados
+
+
+def _check_values_match(expected: dict[str, float], logged: dict[str, Any], source: str) -> None:
+    """Exige que cada valor de ``expected`` coincida con ``logged`` (tolerancia relativa 1e-9).
+
+    Raises:
+        ValueError: Si falta una clave en ``logged`` o algún valor difiere.
+    """
+    errors = [
+        f"{name}: esperado={value!r}, {source}={logged.get(name)!r}"
+        for name, value in expected.items()
+        if name not in logged or not math.isclose(value, logged[name], rel_tol=1e-9)
+    ]
+    if errors:
+        raise ValueError(f"Valores inconsistentes con {source}: " + "; ".join(errors))
+
+
+def find_run_id(experiment_name: str, run_name: str) -> str:
+    """Busca el único run ``FINISHED`` llamado ``run_name`` en ``experiment_name``.
+
+    Los runs con otro estado (por ejemplo, ``FAILED``) se ignoran.
+
+    Args:
+        experiment_name: Experimento MLflow.
+        run_name: Nombre del run (``config.run_name``).
+
+    Returns:
+        El ``run_id``.
+
+    Raises:
+        ValueError: Si el experimento no existe o no hay exactamente un run ``FINISHED``
+            con ese nombre.
+    """
+    mlflow.set_tracking_uri(resolve_tracking_uri())
+    experiment = mlflow.get_experiment_by_name(experiment_name)
+    if experiment is None:
+        raise ValueError(f"No existe el experimento MLflow {experiment_name!r}")
+    runs = mlflow.search_runs(
+        experiment_ids=[experiment.experiment_id],
+        filter_string=f"attributes.run_name = '{run_name}' and attributes.status = 'FINISHED'",
+        output_format="list",
+    )
+    if len(runs) != 1:
+        raise ValueError(
+            f"Se esperaba exactamente un run FINISHED llamado {run_name!r} en "
+            f"{experiment_name!r}; hay {len(runs)}"
+        )
+    return runs[0].info.run_id
+
+
+def _download(run_id: str, artifact_path: str, download_root: Path) -> Path:
+    """Descarga un artifact (archivo o carpeta) a ``download_root/<run_id>/`` y da su ruta."""
+    destination = ensure_dir(download_root / run_id)
+    local = mlflow.artifacts.download_artifacts(
+        run_id=run_id, artifact_path=artifact_path, dst_path=str(destination)
+    )
+    return Path(local)
+
+
+def _get_finished_run(run_id: str) -> mlflow.entities.Run:
+    mlflow.set_tracking_uri(resolve_tracking_uri())
+    run = mlflow.get_run(run_id)
+    if run.info.status != "FINISHED":
+        raise ValueError(f"El run {run_id} tiene estado {run.info.status}, no FINISHED")
+    return run
+
+
+def _history_from_mlflow(run: mlflow.entities.Run) -> History:
+    """Reconstruye el history desde las métricas por época y finales del run."""
+    client = mlflow.MlflowClient()
+    history: dict[str, Any] = {}
+    for metric_name, key in EPOCH_METRICS.items():
+        points = client.get_metric_history(run.info.run_id, metric_name)
+        history[key] = [point.value for point in sorted(points, key=lambda p: p.step)]
+    history["best_epoch"] = int(run.data.metrics["best_epoch"])
+    history["best_val_loss"] = run.data.metrics["best_val_loss"]
+    return History(**history)
+
+
+def _renamed(paths: dict[str, str], directory: Path) -> dict[str, Path]:
+    """``{nombre: ruta original}`` -> ``{nombre: directory / nombre de archivo}``."""
+    return {name: directory / Path(path).name for name, path in paths.items()}
+
+
+def _result_from_dict(
+    data: dict[str, Any],
+    history: History,
+    checkpoint_path: Path,
+    metrics_path: Path,
+    figures_dir: Path,
+) -> ExperimentResult:
+    """Arma un ``ExperimentResult`` desde el JSON del run, con rutas a los artifacts descargados."""
+    train_eval = SplitEvaluation.from_dict(data["train_eval"])
+    val_eval = SplitEvaluation.from_dict(data["val_eval"])
+    return ExperimentResult(
+        config=ExperimentConfig.from_dict(data["config"]),
+        device=data["device"],
+        class_names=list(data["class_names"]),
+        history=history,
+        total_parameters=data["total_parameters"],
+        trainable_parameters=data["trainable_parameters"],
+        train_samples=data["train_samples"],
+        val_samples=data["val_samples"],
+        train_eval=train_eval,
+        val_eval=val_eval,
+        generalization_gap=generalization_gap(train_eval.report.accuracy, val_eval.report.accuracy),
+        checkpoint_path=checkpoint_path,
+        metrics_path=metrics_path,
+        figure_paths=_renamed(data["figure_paths"], figures_dir),
+        run_id=data["run_id"],
+    )
+
+
+def load_run_result(run_id: str, download_root: Path | None = None) -> ExperimentResult:
+    """Reconstruye el ``ExperimentResult`` de un run ya registrado, **sin reentrenar**.
+
+    Fuentes, todas de MLflow: el history sale de las métricas por época y de las métricas
+    finales; las evaluaciones de train y val, del JSON de métricas registrado como
+    artifact; el checkpoint, del artifact ``checkpoints/``. Los artifacts se descargan a
+    ``download_root/<run_id>/``. Se comprueba que todas las fuentes sean consistentes.
+    No toca test.
+
+    El ``checkpoint_path`` devuelto apunta a la copia descargada. Esa copia no tiene el
+    archivo de referencia del run, así que ``evaluate_on_test`` no la acepta.
+
+    Args:
+        run_id: Run producido por ``run_experiment``.
+        download_root: Carpeta de descargas; por defecto ``outputs/mlflow_downloads``.
+
+    Returns:
+        El resultado del run, equivalente al que devolvió ``run_experiment``.
+
+    Raises:
+        ValueError: Si el run no está ``FINISHED`` o sus fuentes no son consistentes
+            (``run_id``, history, métricas finales o config del checkpoint).
+    """
+    run = _get_finished_run(run_id)
+    root = download_root or PROJECT_ROOT / "outputs" / "mlflow_downloads"
+    run_name = run.data.params["run_name"]
+    metrics_path = _download(run_id, f"metrics/{run_name}.json", root)
+    checkpoint_path = _download(run_id, f"checkpoints/{run_name}_best.pt", root)
+    figures_dir = _download(run_id, "figures", root)
+    data = json.loads(metrics_path.read_text())
+
+    history = _history_from_mlflow(run)
+    if data["run_id"] != run_id or data["history"] != dict(history):
+        raise ValueError(f"El JSON de métricas del run {run_id} no coincide con MLflow")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    if checkpoint["config"] != data["config"]:
+        raise ValueError(f"El checkpoint del run {run_id} no corresponde a su configuración")
+
+    result = _result_from_dict(data, history, checkpoint_path, metrics_path, figures_dir)
+    _check_values_match(result.final_metrics(), run.data.metrics, "las métricas de MLflow")
+    return result
+
+
+def load_test_evaluation(run_id: str, download_root: Path | None = None) -> FinalEvaluation:
+    """Lee la evaluación final en test **ya registrada** en un run, sin volver a evaluar.
+
+    Usa el JSON y las figuras de la carpeta ``test/`` del run, descargados a
+    ``download_root/<run_id>/test/``, y comprueba que coincidan con las métricas de test
+    de MLflow. ``checkpoint_path`` es la ruta original con la que se evaluó.
+
+    Args:
+        run_id: Run en el que se ejecutó ``evaluate_on_test``.
+        download_root: Carpeta de descargas; por defecto ``outputs/mlflow_downloads``.
+
+    Returns:
+        La evaluación final registrada.
+
+    Raises:
+        ValueError: Si el run no está ``FINISHED``, no tiene evaluación de test o el JSON
+            no coincide con MLflow.
+    """
+    run = _get_finished_run(run_id)
+    if "test_acc" not in run.data.metrics:
+        raise ValueError(f"El run {run_id} no tiene evaluación de test registrada")
+    root = download_root or PROJECT_ROOT / "outputs" / "mlflow_downloads"
+    test_dir = _download(run_id, "test", root)
+    metrics_path = test_dir / f"{run.data.params['run_name']}_test.json"
+    data = json.loads(metrics_path.read_text())
+    result = FinalEvaluation(
+        checkpoint_path=Path(data["checkpoint_path"]),
+        checkpoint_epoch=data["checkpoint_epoch"],
+        class_names=list(data["class_names"]),
+        test_samples=data["test_samples"],
+        test_eval=SplitEvaluation.from_dict(data["test_eval"]),
+        metrics_path=metrics_path,
+        figure_paths=_renamed(data["figure_paths"], test_dir),
+        run_id=data["run_id"],
+    )
+    if result.run_id != run_id:
+        raise ValueError(f"El JSON de test no corresponde al run {run_id}")
+    _check_values_match(result.final_metrics(), run.data.metrics, "las métricas de MLflow")
     return result

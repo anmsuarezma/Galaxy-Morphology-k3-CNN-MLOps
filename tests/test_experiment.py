@@ -25,8 +25,12 @@ from galaxy3 import data, experiment  # noqa: E402
 from galaxy3.config import ExperimentConfig  # noqa: E402
 from galaxy3.data import DATASET_STATS_NAME  # noqa: E402
 from galaxy3.experiment import (  # noqa: E402
+    SplitEvaluation,
     checkpoint_path_for,
     evaluate_on_test,
+    find_run_id,
+    load_run_result,
+    load_test_evaluation,
     resolve_tracking_uri,
     run_experiment,
     run_reference_path,
@@ -395,3 +399,109 @@ def test_evaluate_on_test_rejects_other_tracking_uri(config, result, monkeypatch
     with pytest.raises(ValueError, match="tracking URI"):
         evaluate_on_test(result.checkpoint_path, config)
     assert not (tmp_path / "other.db").exists()
+
+
+# ------------------------------------------------- lectura de runs registrados
+
+
+@pytest.fixture
+def own_config(config, tmp_path):
+    """Config con un experimento propio: la base de MLflow de la sesión es compartida."""
+    return replace(config, mlflow_experiment_name=f"load-{tmp_path.name}")
+
+
+@pytest.fixture
+def own_result(own_config):
+    return run_experiment(own_config, verbose=False)
+
+
+def test_split_evaluation_round_trip(result):
+    data_dict = result.val_eval.to_dict(result.class_names)
+    rebuilt = SplitEvaluation.from_dict(data_dict)
+    assert rebuilt.loss == result.val_eval.loss
+    assert rebuilt.report.accuracy == result.val_eval.report.accuracy
+    assert rebuilt.report.macro_f1 == result.val_eval.report.macro_f1
+    assert torch.equal(rebuilt.report.confusion_matrix, result.val_eval.report.confusion_matrix)
+
+
+def test_split_evaluation_from_dict_rejects_inconsistent_metrics(result):
+    data_dict = result.val_eval.to_dict(result.class_names) | {"accuracy": 0.0123}
+    with pytest.raises(ValueError, match="accuracy"):
+        SplitEvaluation.from_dict(data_dict)
+
+
+def test_find_run_id(own_config, own_result):
+    assert find_run_id(own_config.mlflow_experiment_name, own_config.run_name) == own_result.run_id
+    with pytest.raises(ValueError, match="exactamente un run"):
+        find_run_id(own_config.mlflow_experiment_name, "no_existe")
+    with pytest.raises(ValueError, match="No existe el experimento"):
+        find_run_id("experimento-inexistente", own_config.run_name)
+
+
+def test_find_run_id_rejects_duplicated_run_names(own_config, own_result):
+    run_experiment(replace(own_config, epochs=1), verbose=False)
+    with pytest.raises(ValueError, match="hay 2"):
+        find_run_id(own_config.mlflow_experiment_name, own_config.run_name)
+
+
+def test_load_run_result_matches_run_experiment(own_result, tmp_path):
+    loaded = load_run_result(own_result.run_id, download_root=tmp_path / "downloads")
+    assert loaded.config == own_result.config
+    assert loaded.run_id == own_result.run_id
+    assert loaded.class_names == own_result.class_names
+    assert dict(loaded.history) == dict(own_result.history)
+    assert loaded.final_metrics() == own_result.final_metrics()
+    assert loaded.val_samples == own_result.val_samples
+    for split in ("train_eval", "val_eval"):
+        loaded_cm = getattr(loaded, split).report.confusion_matrix
+        assert torch.equal(loaded_cm, getattr(own_result, split).report.confusion_matrix)
+
+    downloads = tmp_path / "downloads" / own_result.run_id
+    assert loaded.checkpoint_path.is_relative_to(downloads)
+    assert loaded.metrics_path.is_file()
+    assert all(path.is_file() for path in loaded.figure_paths.values())
+    copy = torch.load(loaded.checkpoint_path, weights_only=True)
+    original = torch.load(own_result.checkpoint_path, weights_only=True)
+    for key, tensor in original["model_state_dict"].items():
+        assert torch.equal(copy["model_state_dict"][key], tensor)
+
+
+def test_load_run_result_does_not_open_any_loader(own_result, tmp_path, monkeypatch):
+    requested = []
+    monkeypatch.setattr(experiment, "make_split_loader", lambda *args: requested.append(args))
+    load_run_result(own_result.run_id, download_root=tmp_path)
+    assert requested == []
+
+
+def test_load_run_result_rejects_inconsistent_history(own_result, tmp_path):
+    mlflow.MlflowClient().log_metric(own_result.run_id, "val_loss", 99.0, step=1)
+    with pytest.raises(ValueError, match="no coincide con MLflow"):
+        load_run_result(own_result.run_id, download_root=tmp_path)
+
+
+def test_downloaded_checkpoint_cannot_be_evaluated_on_test(own_config, own_result, tmp_path):
+    loaded = load_run_result(own_result.run_id, download_root=tmp_path)
+    with pytest.raises(FileNotFoundError, match="mlflow.json"):
+        evaluate_on_test(loaded.checkpoint_path, own_config)
+
+
+def test_load_test_evaluation_requires_registered_test(own_result, tmp_path):
+    with pytest.raises(ValueError, match="no tiene evaluación de test"):
+        load_test_evaluation(own_result.run_id, download_root=tmp_path)
+
+
+def test_load_test_evaluation_reads_registered_results(own_config, own_result, tmp_path):
+    final = evaluate_on_test(own_result.checkpoint_path, own_config)
+    loaded = load_test_evaluation(own_result.run_id, download_root=tmp_path)
+    assert loaded.final_metrics() == final.final_metrics()
+    assert loaded.checkpoint_epoch == final.checkpoint_epoch
+    assert loaded.checkpoint_path == final.checkpoint_path
+    assert loaded.test_samples == final.test_samples
+    assert torch.equal(
+        loaded.test_eval.report.confusion_matrix, final.test_eval.report.confusion_matrix
+    )
+    assert set(loaded.figure_paths) == set(final.figure_paths)
+    assert all(path.is_file() for path in loaded.figure_paths.values())
+    # leer no es evaluar: sigue sin poder evaluarse una segunda vez
+    with pytest.raises(RuntimeError, match="una sola vez"):
+        evaluate_on_test(own_result.checkpoint_path, own_config)
